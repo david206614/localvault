@@ -1,0 +1,23 @@
+# Rust / Cargo
+/target
+
+# Node
+/node_modules
+/dist
+
+# Tauri build artifacts
+/src-tauri/target
+/src-tauri/gen
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Environment / secrets (never commit)
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
