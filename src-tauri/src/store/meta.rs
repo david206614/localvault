@@ -5,6 +5,7 @@
 //! is public data) and MUST be readable before any key exists, which is why
 //! it lives outside the encrypted database (design decision).
 
+use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -111,14 +112,31 @@ pub fn write_meta(dir: &Path, meta: &VaultMeta) -> Result<(), StoreError> {
     let json = serde_json::to_string_pretty(meta)
         .map_err(|e| StoreError::MetaCorrupt(format!("serialize failed: {e}")))?;
     let tmp = meta_path(dir).with_extension("meta.tmp");
-    std::fs::write(&tmp, json).map_err(StoreError::Io)?;
-    // The temp file carries the final 0600; rename preserves its inode
-    // permissions, so vault.meta lands owner-only (review fix R1).
-    #[cfg(unix)]
-    restrict_file(&tmp)?;
+    {
+        // fsync BEFORE rename (review fix R1): the header bytes must be
+        // durable before the rename publishes them — otherwise a power loss
+        // right after rename can leave a zero-length or truncated
+        // `vault.meta` that bricks unlock. `sync_all` flushes data AND
+        // metadata (including the 0600 chmod below).
+        let mut f = std::fs::File::create(&tmp).map_err(StoreError::Io)?;
+        f.write_all(json.as_bytes()).map_err(StoreError::Io)?;
+        // The temp file carries the final 0600; rename preserves its inode
+        // permissions, so vault.meta lands owner-only (review fix R1).
+        #[cfg(unix)]
+        restrict_file(&tmp)?;
+        f.sync_all().map_err(StoreError::Io)?;
+    }
     if let Err(e) = std::fs::rename(&tmp, meta_path(dir)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(StoreError::Io(e));
+    }
+    // fsync the parent directory so the rename itself is durable: without it,
+    // the vault.meta directory entry can be lost on power loss even though
+    // the data was synced. Best-effort — opening a directory read-only is
+    // not supported on every platform, and this is belt-and-braces on top of
+    // the file fsync.
+    if let Ok(dir_f) = std::fs::File::open(dir) {
+        let _ = dir_f.sync_all();
     }
     Ok(())
 }
