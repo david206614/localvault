@@ -115,7 +115,15 @@ pub struct VaultSession {
 impl VaultSession {
     /// Starts a session at `dir` (injected path — tests never touch the real
     /// user data dir). Initial state follows whether a vault file exists.
+    ///
+    /// Reconciles the crash window between DB create and meta write (review
+    /// fix R1): a keyed `vault.db` without `vault.meta` is unrecoverable by
+    /// design (salt/verifier live only in the header), so the orphaned DB is
+    /// removed and the session starts as `NoVault`, letting the user create a
+    /// clean vault. Best-effort: if the removal fails (pathological IO) the
+    /// session stays `Locked` and unlock fails opaquely.
     pub fn new(dir: PathBuf) -> Self {
+        let _ = store::remove_orphaned_vault(&dir);
         let state = if store::vault_exists(&dir) {
             SessionState::Locked
         } else {
@@ -162,5 +170,77 @@ impl VaultSession {
             };
         }
         self.store.as_ref().ok_or(VaultError::NotUnlocked)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::{FAST_TEST_M_KIB, FAST_TEST_P, FAST_TEST_T, KdfParams};
+    use crate::store::{db_path, meta_path};
+
+    fn fast_params() -> KdfParams {
+        KdfParams::new(FAST_TEST_M_KIB, FAST_TEST_T, FAST_TEST_P)
+    }
+
+    fn policy_password() -> &'static [u8] {
+        b"CorrectHorseBatteryStaple!1"
+    }
+
+    fn session_dir() -> std::path::PathBuf {
+        tempfile::tempdir().unwrap().keep()
+    }
+
+    #[test]
+    fn orphaned_db_without_meta_is_removed_and_create_allowed() {
+        // Review fix R1: crash window between DB create and meta write (or a
+        // deleted header). The keyed DB without meta is unrecoverable, so the
+        // next session removes it and treats the vault as absent.
+        let dir = session_dir();
+        let mut s1 = VaultSession::new(dir.clone());
+        s1.create(policy_password(), policy_password(), &fast_params())
+            .unwrap();
+        // Simulate the crash: only the encrypted DB survives.
+        std::fs::remove_file(meta_path(&dir)).unwrap();
+        assert!(db_path(&dir).exists());
+
+        let mut s2 = VaultSession::new(dir.clone());
+        assert_eq!(s2.state(), SessionState::NoVault);
+        assert!(!db_path(&dir).exists(), "orphaned DB must be removed");
+        // Re-create from scratch works cleanly.
+        s2.create(policy_password(), policy_password(), &fast_params())
+            .unwrap();
+        assert_eq!(s2.state(), SessionState::Unlocked);
+        assert!(meta_path(&dir).exists());
+    }
+
+    #[test]
+    fn intact_vault_is_not_touched_by_session_start() {
+        let dir = session_dir();
+        let mut s1 = VaultSession::new(dir.clone());
+        s1.create(policy_password(), policy_password(), &fast_params())
+            .unwrap();
+        s1.lock();
+
+        let s2 = VaultSession::new(dir.clone());
+        assert_eq!(s2.state(), SessionState::Locked);
+        assert!(db_path(&dir).exists());
+        assert!(meta_path(&dir).exists());
+    }
+
+    #[test]
+    fn corrupt_meta_does_not_trigger_orphan_cleanup() {
+        // A present-but-corrupt header still describes a real vault: never
+        // delete the DB on a read hiccup — surface the corruption instead.
+        let dir = session_dir();
+        let mut s1 = VaultSession::new(dir.clone());
+        s1.create(policy_password(), policy_password(), &fast_params())
+            .unwrap();
+        s1.lock();
+        std::fs::write(meta_path(&dir), b"{ not json !").unwrap();
+
+        let s2 = VaultSession::new(dir.clone());
+        assert_eq!(s2.state(), SessionState::Locked, "corrupt meta ≠ orphan");
+        assert!(db_path(&dir).exists(), "DB must survive corrupt meta");
     }
 }

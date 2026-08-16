@@ -87,6 +87,31 @@ pub fn vault_exists(dir: &Path) -> bool {
     db_path(dir).exists()
 }
 
+/// Removes an orphaned `vault.db` that has no `vault.meta` alongside it.
+///
+/// A keyed database whose header is gone is unrecoverable BY DESIGN: the KDF
+/// salt, params, and verifier live only in `vault.meta`, so the key can never
+/// be re-derived and the DB can never be opened again. This happens in the
+/// crash window between `Store::create` (DB written) and `write_meta`
+/// (header written) — or if the header is deleted manually. Removing the
+/// orphan lets the next create start clean instead of surfacing a bricked
+/// vault that blocks everything (review fix R1).
+///
+/// Only a MISSING meta file triggers removal: a corrupt-but-present header
+/// still describes a real vault and must never be deleted on a read hiccup.
+/// Returns `true` when an orphan was removed.
+pub fn remove_orphaned_vault(dir: &Path) -> Result<bool, StoreError> {
+    let db = db_path(dir);
+    if !db.exists() {
+        return Ok(false);
+    }
+    if meta_path(dir).exists() {
+        return Ok(false);
+    }
+    std::fs::remove_file(&db).map_err(StoreError::Io)?;
+    Ok(true)
+}
+
 /// Restrictive permissions for the vault directory (Unix): `0700` — owner
 /// only. The whole vault (encrypted DB + header) lives under it, so the
 /// directory must not be traversable by other users. Set EXPLICITLY after
