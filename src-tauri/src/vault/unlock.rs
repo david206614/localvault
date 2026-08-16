@@ -153,14 +153,11 @@ mod tests {
         let path = meta_path(&dir);
         let mut meta: crate::store::VaultMeta =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let original = meta.salt_hex.clone();
-        let flipped = if original.starts_with('0') {
-            format!("f{}", &original[1..])
-        } else {
-            format!("0{}", &original[1..])
-        };
-        assert_ne!(flipped, original, "salt must actually change");
-        meta.salt_hex = flipped;
+        // Flip one byte of the decoded salt, then re-encode: guaranteed to
+        // change the value regardless of what the first hex digit was.
+        let mut salt = meta.salt().unwrap();
+        salt[0] ^= 0xFF;
+        meta.salt_hex = hex::encode(salt);
         std::fs::write(&path, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
 
         let err = session.unlock(policy_password()).unwrap_err();

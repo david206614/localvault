@@ -489,11 +489,7 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(db_mode, 0o600, "vault.db must be owner-only");
-        let dir_mode = std::fs::metadata(dir.path())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700, "vault dir must be owner-only");
     }
 
@@ -586,6 +582,132 @@ mod tests {
             .query_row("PRAGMA cipher_memory_security", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mem_sec, "1", "cipher_memory_security must be ON");
+    }
+
+    #[test]
+    fn adversarial_inputs_roundtrip_byte_identical_and_table_survives() {
+        // Hostile strings must round-trip byte-identically through the
+        // parameterized API, and an injection attempt must never alter the
+        // schema (review fix R1): the classic '); DROP TABLE -- must fail to
+        // do anything but insert its own literal row.
+        let dir = temp_dir();
+        let store = Store::create(dir.path(), &test_key()).unwrap();
+        let long = "x".repeat(10_000);
+        let hostile = [
+            "O'Reilly",
+            "'); DROP TABLE credentials;--",
+            "héllo wörld 世界 🚀",
+            "line1\nline2\r\nline3\tend",
+            "with\"quotes\"and\\backslashes",
+            long.as_str(),
+        ];
+        store
+            .with_transaction(|conn| {
+                for (i, value) in hostile.iter().enumerate() {
+                    conn.execute(
+                        "INSERT INTO credentials
+                         (service_name, username, password, url, category, notes,
+                          created_at, updated_at)
+                         VALUES (?1, ?2, '', '', '', '', '2026-08-16T00:00:00Z',
+                                 '2026-08-16T00:00:00Z')",
+                        rusqlite::params![value, format!("user{i}")],
+                    )
+                    .map_err(StoreError::Sqlite)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        // Byte-identical round-trip, in insertion order.
+        store
+            .with_transaction(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT username, service_name FROM credentials ORDER BY username")
+                    .map_err(StoreError::Sqlite)?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(StoreError::Sqlite)?;
+                let mut seen = 0;
+                for row in rows {
+                    let (username, service) = row.map_err(StoreError::Sqlite)?;
+                    assert_eq!(username, format!("user{seen}"));
+                    assert_eq!(
+                        service.as_bytes(),
+                        hostile[seen].as_bytes(),
+                        "row {seen} must round-trip byte-identically"
+                    );
+                    seen += 1;
+                }
+                assert_eq!(seen, hostile.len());
+                Ok(())
+            })
+            .unwrap();
+        // The injection attempt must not have touched the schema.
+        let count: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM credentials", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, hostile.len() as i64);
+    }
+
+    #[test]
+    fn two_connections_coexist_and_concurrent_write_is_busy() {
+        // Two connections to the same vault file are allowed and each sees
+        // the other's committed writes. Concurrent WRITES contend on the
+        // rollback journal (DELETE mode, no WAL, no busy_timeout), so the
+        // second writer fails fast with SQLITE_BUSY — documented, accepted
+        // behavior: the app runs ONE session and batch 3 serializes commands
+        // through it (review fix R1 documents the actual behavior).
+        let dir = temp_dir();
+        let store_a = Store::create(dir.path(), &test_key()).unwrap();
+        let store_b = Store::open(dir.path(), &test_key()).unwrap();
+
+        insert_row(&store_a, "github");
+        let count: i64 = store_b
+            .connection()
+            .query_row("SELECT count(*) FROM credentials", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "committed writes from A must be visible to B");
+
+        // Hold an uncommitted write on A (IMMEDIATE → RESERVED file lock)...
+        let tx_a = Transaction::new_unchecked(store_a.connection(), TransactionBehavior::Immediate)
+            .unwrap();
+        tx_a.execute(
+            "INSERT INTO credentials
+                 (service_name, username, password, created_at, updated_at)
+                 VALUES ('pending', 'u', '', 't', 't')",
+            [],
+        )
+        .unwrap();
+        // ...B's write attempt fails fast with SQLITE_BUSY (no busy handler).
+        let err = store_b
+            .with_transaction(|conn| {
+                conn.execute(
+                    "INSERT INTO credentials
+                     (service_name, username, password, created_at, updated_at)
+                     VALUES ('contender', 'u', '', 't', 't')",
+                    [],
+                )
+                .map_err(StoreError::Sqlite)?;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StoreError::Sqlite(rusqlite::Error::SqliteFailure(ref e, _))
+                    if e.code == rusqlite::ErrorCode::DatabaseBusy
+            ),
+            "second concurrent writer must get SQLITE_BUSY, got {err:?}"
+        );
+        tx_a.commit().unwrap();
+
+        // After A commits, B writes fine.
+        insert_row(&store_b, "gitlab");
+        let count: i64 = store_a
+            .connection()
+            .query_row("SELECT count(*) FROM credentials", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
     }
 
     #[test]
