@@ -93,7 +93,7 @@ mod tests {
         session
             .store()
             .unwrap()
-            .with_transaction(|conn| {
+            .with_transaction(|conn| -> Result<(), crate::store::StoreError> {
                 conn.execute(
                     "INSERT INTO credentials
                      (service_name, username, password, created_at, updated_at)
