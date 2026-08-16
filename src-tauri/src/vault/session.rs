@@ -176,7 +176,7 @@ impl VaultSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{FAST_TEST_M_KIB, FAST_TEST_P, FAST_TEST_T, KdfParams};
+    use crate::crypto::{KdfParams, FAST_TEST_M_KIB, FAST_TEST_P, FAST_TEST_T};
     use crate::store::{db_path, meta_path};
 
     fn fast_params() -> KdfParams {

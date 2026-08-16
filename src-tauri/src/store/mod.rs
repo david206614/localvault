@@ -118,8 +118,7 @@ pub fn remove_orphaned_vault(dir: &Path) -> Result<bool, StoreError> {
 /// creation: we never rely on the ambient umask (review fix R1).
 #[cfg(unix)]
 pub(crate) fn restrict_dir(dir: &Path) -> Result<(), StoreError> {
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(StoreError::Io)
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(StoreError::Io)
 }
 
 /// Restrictive permissions for a vault file (Unix): `0600` — owner read/write
@@ -128,8 +127,7 @@ pub(crate) fn restrict_dir(dir: &Path) -> Result<(), StoreError> {
 /// relying on the ambient umask (review fix R1).
 #[cfg(unix)]
 pub(crate) fn restrict_file(path: &Path) -> Result<(), StoreError> {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(StoreError::Io)
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(StoreError::Io)
 }
 
 /// Resolves the default vault directory.
