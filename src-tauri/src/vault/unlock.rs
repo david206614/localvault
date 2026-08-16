@@ -144,11 +144,28 @@ mod tests {
     fn unlock_with_tampered_salt_fails_opaque() {
         let dir = session_dir();
         let mut session = locked_session(dir.clone());
-        // The salt field follows format(4) + kdf params; flip one hex byte of
-        // the salt so the derived key diverges.
-        corrupt_file_bytes(&meta_path(&dir), 8, b'0');
+        // Tamper the ACTUAL salt_hex value: parse the header JSON, flip the
+        // first hex digit of the salt, write it back. (The old offset-8
+        // write hit the "format" field name in the pretty JSON instead —
+        // review fix R1.) The header still validates (valid hex, right
+        // length), so this genuinely exercises "different salt → different
+        // derived key → verifier rejects" (CRY-04).
+        let path = meta_path(&dir);
+        let mut meta: crate::store::VaultMeta =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let original = meta.salt_hex.clone();
+        let flipped = if original.starts_with('0') {
+            format!("f{}", &original[1..])
+        } else {
+            format!("0{}", &original[1..])
+        };
+        assert_ne!(flipped, original, "salt must actually change");
+        meta.salt_hex = flipped;
+        std::fs::write(&path, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+
         let err = session.unlock(policy_password()).unwrap_err();
         assert!(matches!(err, VaultError::UnlockFailed));
+        assert_eq!(session.state(), SessionState::Locked);
     }
 
     #[test]

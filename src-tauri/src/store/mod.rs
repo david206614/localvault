@@ -195,10 +195,10 @@ mod tests {
         std::env::remove_var("LOCALVAULT_VAULT_DIR");
         let resolved = default_vault_dir().unwrap();
         // Linux: ~/.local/share/localvault; the invariant is the leaf segment.
+        // The default resolution is pure (creates nothing), but we do NOT
+        // assert non-existence: a real app run on the dev machine legitimately
+        // creates the directory, which would flake this test (review fix R1).
         assert_eq!(resolved.file_name().unwrap().to_str(), Some("localvault"));
-        // And it must never be a real path we created: the default resolution
-        // is pure (no directory is created).
-        assert!(!resolved.exists());
     }
 
     #[test]
