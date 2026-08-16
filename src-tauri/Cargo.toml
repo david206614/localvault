@@ -1,0 +1,43 @@
+[package]
+name = "localvault"
+version = "0.1.0"
+description = "LocalVault — local-first, offline password manager (Rust core)"
+edition = "2021"
+publish = false
+
+[lib]
+name = "localvault_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "localvault"
+path = "src/main.rs"
+# The Tauri shell requires the platform webview (webkit2gtk-4.1 on Linux),
+# so the desktop binary is only built when the `app` feature is enabled.
+# Core modules never depend on Tauri: `cargo test`/`clippy`/`build` run
+# without it (CI and machines with the webview enable `--features app`).
+required-features = ["app"]
+
+[features]
+default = []
+app = ["dep:tauri", "dep:tauri-build", "tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", optional = true }
+
+[dependencies]
+argon2 = "=0.5.3"
+hex = "=0.4.3"
+hmac = "=0.12.1"
+rand = "=0.8.5"
+# SQLCipher with the `bundled-sqlcipher-vendored-openssl` backend: statically
+# links the audited vendored OpenSSL sources, so the crypto backend is
+# deterministic across build machines instead of depending on whatever
+# libcrypto the host ships (plain `bundled-sqlcipher` links system OpenSSL).
+rusqlite = { version = "=0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.8"
+subtle = "=2.6.1"
+tauri = { version = "=2.11.5", optional = true }
+zeroize = "=1.9.0"
