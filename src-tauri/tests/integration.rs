@@ -14,6 +14,8 @@
 //!   `VaultSession` (SQLITE_BUSY is expected for concurrent writers and the
 //!   command layer serializes by design).
 
+use std::sync::{Arc, Mutex};
+
 use localvault_lib::commands::{
     create_credential, create_vault, delete_credential, get_credential, list_credentials, lock,
     unlock, update_credential, vault_status,
@@ -469,4 +471,77 @@ fn rapid_sequential_writes_through_one_session_succeed() {
         create_credential(&session, input).unwrap();
     }
     assert_eq!(list_credentials(&session).unwrap().len(), 20);
+}
+
+// ---- W3: serialization through ONE session, proven under real threads ----
+
+#[test]
+fn concurrent_crud_through_shared_session_is_serialized() {
+    // The production serialization lives in the `app`-feature wrapper
+    // (Mutex in `with_session`/`blocking`), which can't build locally (no
+    // webkit, no ../dist). The serialization THROUGH ONE SESSION is
+    // testable without the feature: guard `Arc<Mutex<VaultSession>>` exactly
+    // like `with_session` does and hammer it from N threads. This proves
+    // SQLITE_BUSY avoidance via single-session serialization — and that
+    // `Connection: Send` (PR 2 claim) holds so the wrapper compiles.
+    const THREADS: usize = 8;
+    const PER_THREAD: usize = 5;
+    let expected = THREADS * PER_THREAD;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = Arc::new(Mutex::new(VaultSession::new(dir.path().to_path_buf())));
+    let pw = master_password();
+    {
+        let mut guard = session.lock().unwrap_or_else(|e| e.into_inner());
+        create_vault(&mut guard, pw.clone(), pw.clone(), &fast_params()).unwrap();
+    }
+
+    let handles: Vec<_> = (0..THREADS)
+        .map(|t| {
+            let session = Arc::clone(&session);
+            let pw = pw.clone();
+            std::thread::spawn(move || {
+                for i in 0..PER_THREAD {
+                    let mut guard = session.lock().unwrap_or_else(|e| e.into_inner());
+                    // Idempotent when already Unlocked — exercises the same
+                    // command path the wrappers run per request.
+                    unlock(&mut guard, pw.clone()).unwrap();
+                    let mut input = sample_input();
+                    input.service_name = format!("svc-{t:02}-{i:02}");
+                    create_credential(&guard, input).unwrap();
+                }
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("worker thread panicked");
+    }
+
+    {
+        let guard = session.lock().unwrap_or_else(|e| e.into_inner());
+        let names: Vec<String> = list_credentials(&guard)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.service_name)
+            .collect();
+        assert_eq!(names.len(), expected, "no lost rows under concurrency");
+        let unique: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(
+            unique.len(),
+            expected,
+            "no duplicate rows under concurrency"
+        );
+        // The file itself is uncorrupted after the burst.
+        guard.store().unwrap().verify_integrity().unwrap();
+    }
+
+    // The store still opens cleanly from a fresh session (restart flow).
+    {
+        let mut guard = session.lock().unwrap_or_else(|e| e.into_inner());
+        lock(&mut guard).unwrap();
+    }
+    let mut fresh = VaultSession::new(dir.path().to_path_buf());
+    assert_eq!(fresh.state(), SessionState::Locked);
+    unlock(&mut fresh, pw).unwrap();
+    assert_eq!(list_credentials(&fresh).unwrap().len(), expected);
 }
