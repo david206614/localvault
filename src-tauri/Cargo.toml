@@ -27,6 +27,8 @@ tauri-build = { version = "=2.6.3", optional = true }
 
 [dependencies]
 argon2 = "=0.5.3"
+# UTC RFC3339 timestamps for credential created_at/updated_at (design).
+chrono = "=0.4.45"
 # Platform data dir resolution for the default vault path (~/.local/share).
 dirs = "=6.0.0"
 hex = "=0.4.3"

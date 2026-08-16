@@ -7,7 +7,11 @@ use crate::crypto::VaultKey;
 use crate::store::{self, Store, StoreError};
 
 /// Session state machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize`: the `vault_status` command returns this to the frontend to
+/// drive the first-run gate (SHE-01) — variants serialize as
+/// `"NoVault" | "Locked" | "Unlocked"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum SessionState {
     /// No vault exists at the session directory yet — first-run create gate
     /// (SHE-01).
@@ -176,7 +180,7 @@ impl VaultSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{FAST_TEST_M_KIB, FAST_TEST_P, FAST_TEST_T, KdfParams};
+    use crate::crypto::{KdfParams, FAST_TEST_M_KIB, FAST_TEST_P, FAST_TEST_T};
     use crate::store::{db_path, meta_path};
 
     fn fast_params() -> KdfParams {

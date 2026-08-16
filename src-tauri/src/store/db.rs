@@ -202,10 +202,17 @@ impl Store {
 
     /// Runs `f` inside an `IMMEDIATE` transaction; rolls back on any error
     /// (STO-07) and commits only when `f` returns `Ok`.
-    pub fn with_transaction<T>(
+    ///
+    /// The closure may return any error type `E` that wraps `StoreError`
+    /// (e.g. the credential layer's `CredentialError`), so business errors
+    /// like "not found" roll back the transaction too.
+    pub fn with_transaction<T, E>(
         &self,
-        f: impl FnOnce(&Connection) -> Result<T, StoreError>,
-    ) -> Result<T, StoreError> {
+        f: impl FnOnce(&Connection) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<StoreError>,
+    {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
             .map_err(StoreError::Sqlite)?;
         let result = f(&tx);
@@ -219,11 +226,9 @@ impl Store {
         }
     }
 
-    /// Raw connection access for the credential layer (task 3.1).
-    // Currently only reached from tests (and the vault session's persistence
-    // test); the credential CRUD layer consumes it next batch. The allowance
-    // disappears once 3.1 lands.
-    #[allow(dead_code)]
+    /// Raw connection access for the credential layer (task 3.1) and the
+    /// store's own tests. All access is read-only here; writes go through
+    /// `with_transaction`.
     pub(crate) fn connection(&self) -> &Connection {
         &self.conn
     }
@@ -261,7 +266,7 @@ mod tests {
 
     fn insert_row(store: &Store, service: &str) {
         store
-            .with_transaction(|conn| {
+            .with_transaction(|conn| -> Result<(), StoreError> {
                 conn.execute(
                     "INSERT INTO credentials
                      (service_name, username, password, url, category, notes,
@@ -529,7 +534,7 @@ mod tests {
         {
             let store = Store::create(dir.path(), &test_key()).unwrap();
             store
-                .with_transaction(|conn| {
+                .with_transaction(|conn| -> Result<(), StoreError> {
                     conn.execute(
                         "INSERT INTO credentials
                          (service_name, username, password, url, category, notes,
@@ -602,7 +607,7 @@ mod tests {
             long.as_str(),
         ];
         store
-            .with_transaction(|conn| {
+            .with_transaction(|conn| -> Result<(), StoreError> {
                 for (i, value) in hostile.iter().enumerate() {
                     conn.execute(
                         "INSERT INTO credentials
@@ -619,7 +624,7 @@ mod tests {
             .unwrap();
         // Byte-identical round-trip, in insertion order.
         store
-            .with_transaction(|conn| {
+            .with_transaction(|conn| -> Result<(), StoreError> {
                 let mut stmt = conn
                     .prepare("SELECT username, service_name FROM credentials ORDER BY username")
                     .map_err(StoreError::Sqlite)?;
@@ -680,7 +685,7 @@ mod tests {
         .unwrap();
         // ...B's write attempt fails fast with SQLITE_BUSY (no busy handler).
         let err = store_b
-            .with_transaction(|conn| {
+            .with_transaction(|conn| -> Result<(), StoreError> {
                 conn.execute(
                     "INSERT INTO credentials
                      (service_name, username, password, created_at, updated_at)

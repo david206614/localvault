@@ -304,11 +304,7 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "vault.meta must be owner-only");
-        let dir_mode = std::fs::metadata(dir.path())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700, "vault dir must be owner-only");
     }
 
