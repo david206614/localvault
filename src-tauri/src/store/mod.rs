@@ -16,6 +16,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 mod db;
 mod meta;
 mod schema;
@@ -82,6 +85,26 @@ pub fn meta_path(dir: &Path) -> PathBuf {
 /// Whether a vault already exists at `dir` (i.e. its database file is there).
 pub fn vault_exists(dir: &Path) -> bool {
     db_path(dir).exists()
+}
+
+/// Restrictive permissions for the vault directory (Unix): `0700` — owner
+/// only. The whole vault (encrypted DB + header) lives under it, so the
+/// directory must not be traversable by other users. Set EXPLICITLY after
+/// creation: we never rely on the ambient umask (review fix R1).
+#[cfg(unix)]
+pub(crate) fn restrict_dir(dir: &Path) -> Result<(), StoreError> {
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(StoreError::Io)
+}
+
+/// Restrictive permissions for a vault file (Unix): `0600` — owner read/write
+/// only. Applied to `vault.db` and the `vault.meta` temp file (rename
+/// preserves the inode permissions). Set EXPLICITLY after creation, never
+/// relying on the ambient umask (review fix R1).
+#[cfg(unix)]
+pub(crate) fn restrict_file(path: &Path) -> Result<(), StoreError> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(StoreError::Io)
 }
 
 /// Resolves the default vault directory.

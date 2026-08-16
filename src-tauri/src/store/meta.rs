@@ -13,6 +13,9 @@ use crate::crypto::{KdfParams, SALT_LEN, VERIFIER_LEN};
 
 use super::{meta_path, schema, StoreError};
 
+#[cfg(unix)]
+use super::{restrict_dir, restrict_file};
+
 /// The vault header persisted as `vault.meta` JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultMeta {
@@ -102,10 +105,17 @@ fn decode_hex<const N: usize>(hex_str: &str, what: &str) -> Result<[u8; N], Stor
 pub fn write_meta(dir: &Path, meta: &VaultMeta) -> Result<(), StoreError> {
     meta.validate()?;
     std::fs::create_dir_all(dir).map_err(StoreError::Io)?;
+    // Review fix R1: the vault dir is owner-only — never rely on umask.
+    #[cfg(unix)]
+    restrict_dir(dir)?;
     let json = serde_json::to_string_pretty(meta)
         .map_err(|e| StoreError::MetaCorrupt(format!("serialize failed: {e}")))?;
     let tmp = meta_path(dir).with_extension("meta.tmp");
     std::fs::write(&tmp, json).map_err(StoreError::Io)?;
+    // The temp file carries the final 0600; rename preserves its inode
+    // permissions, so vault.meta lands owner-only (review fix R1).
+    #[cfg(unix)]
+    restrict_file(&tmp)?;
     if let Err(e) = std::fs::rename(&tmp, meta_path(dir)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(StoreError::Io(e));
@@ -260,6 +270,28 @@ mod tests {
         let meta = sample_meta();
         assert_eq!(meta.salt().unwrap(), [0x11; SALT_LEN]);
         assert_eq!(meta.verifier().unwrap(), [0x22; VERIFIER_LEN]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn meta_file_has_restrictive_permissions() {
+        // Review fix R1: vault.meta must be 0600 (owner-only) after write —
+        // the temp file's 0600 must survive the rename.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        write_meta(dir.path(), &sample_meta()).unwrap();
+        let mode = std::fs::metadata(meta_path(dir.path()))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "vault.meta must be owner-only");
+        let dir_mode = std::fs::metadata(dir.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "vault dir must be owner-only");
     }
 
     #[test]

@@ -20,6 +20,9 @@ use crate::crypto::VaultKey;
 
 use super::{db_path, schema, StoreError};
 
+#[cfg(unix)]
+use super::{restrict_dir, restrict_file};
+
 /// Open encrypted connection factory: raw-key pragma, cipher settings, DELETE
 /// journal, and a read probe that forces SQLCipher to decrypt page 1.
 ///
@@ -87,7 +90,13 @@ impl Store {
             return Err(StoreError::AlreadyExists);
         }
         std::fs::create_dir_all(dir).map_err(StoreError::Io)?;
+        // Review fix R1: the vault dir is owner-only — never rely on umask.
+        #[cfg(unix)]
+        restrict_dir(dir)?;
         let conn = open_encrypted(&path, key)?;
+        // SQLCipher just created the file; lock it down to owner-only.
+        #[cfg(unix)]
+        restrict_file(&path)?;
         // Schema init is transactional (STO-07): DDL + user_version commit
         // atomically, so a crash mid-init never leaves a version-0 database
         // that would look like an empty-but-valid vault.
@@ -439,6 +448,29 @@ mod tests {
             .query_row("SELECT count(*) FROM credentials", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "failed transaction must not leave partial rows");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn vault_dir_and_db_have_restrictive_permissions() {
+        // Review fix R1: vault dir 0700, vault.db 0600 — set explicitly, so
+        // the test also fails if the umask ever gets trusted again.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir();
+        let store = Store::create(dir.path(), &test_key()).unwrap();
+        insert_row(&store, "github");
+        let db_mode = std::fs::metadata(store.db_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(db_mode, 0o600, "vault.db must be owner-only");
+        let dir_mode = std::fs::metadata(dir.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "vault dir must be owner-only");
     }
 
     #[test]
