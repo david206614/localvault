@@ -115,26 +115,66 @@ fn full_lifecycle_create_crud_relock_and_delete() {
 
 #[test]
 fn unlock_failures_are_opaque_and_byte_identical() {
-    let (_dir, mut session) = make_session();
-    let pw = master_password();
-    create_vault(&mut session, pw.clone(), pw.clone(), &fast_params()).unwrap();
-    lock(&mut session).unwrap();
-
-    // Wrong password...
-    let wrong_pw = unlock(&mut session, "WrongHorseBatteryStaple!2".to_string()).unwrap_err();
-
-    // ...and tampered meta collapse to the SAME AppError (CRY-04 no-oracle:
-    // byte-identical code, key, and message — the caller cannot distinguish).
-    std::fs::write(session.dir().join("vault.meta"), b"{ not json !").unwrap();
-    let tampered = unlock(&mut session, pw).unwrap_err();
+    // CRY-04 no-oracle, at the COMMAND layer: wrong password, tampered meta,
+    // and corrupt DB must collapse to the SAME AppError (byte-identical
+    // code/key/message). Each leg uses an isolated vault so the failure mode
+    // is genuinely exercised — in particular the corrupt-DB leg (W1): with
+    // the meta INTACT, unlock reaches `Store::open`, whose failure must map
+    // to `unlock_failed`. This is the leg that guards the `VaultError::Store`
+    // arm in `map_vault_error` — if a future refactor routed corrupt-DB
+    // through `Store`, the command layer would return `internal` here and
+    // this test fails.
+    let wrong_pw = {
+        let (_dir, mut session) = make_session();
+        let pw = master_password();
+        create_vault(&mut session, pw.clone(), pw.clone(), &fast_params()).unwrap();
+        lock(&mut session).unwrap();
+        unlock(&mut session, "WrongHorseBatteryStaple!2".to_string()).unwrap_err()
+    };
+    let tampered_meta = {
+        let (_dir, mut session) = make_session();
+        let pw = master_password();
+        create_vault(&mut session, pw.clone(), pw.clone(), &fast_params()).unwrap();
+        lock(&mut session).unwrap();
+        std::fs::write(session.dir().join("vault.meta"), b"{ not json !").unwrap();
+        unlock(&mut session, pw).unwrap_err()
+    };
+    let corrupt_db = {
+        let (_dir, mut session) = make_session();
+        let pw = master_password();
+        create_vault(&mut session, pw.clone(), pw.clone(), &fast_params()).unwrap();
+        lock(&mut session).unwrap();
+        // Corrupt the DB BODY (not meta): flip one byte in a data page so
+        // the file still parses as SQLCipher but its page HMAC fails.
+        let path = localvault_lib::store::db_path(session.dir());
+        let mut bytes = std::fs::read(&path).unwrap();
+        let target = 4096 * 2 + 200;
+        assert!(target < bytes.len(), "database too small to tamper");
+        bytes[target] ^= 0xFF;
+        std::fs::write(&path, bytes).unwrap();
+        let err = unlock(&mut session, pw).unwrap_err();
+        assert_eq!(
+            vault_status(&session).unwrap(),
+            SessionState::Locked,
+            "failed unlock must not open the session"
+        );
+        err
+    };
 
     assert_eq!(wrong_pw.code, "unlock_failed");
     assert_eq!(wrong_pw.key, "errors.unlock_failed");
     assert_eq!(
-        wrong_pw, tampered,
-        "no oracle: errors must be byte-identical"
+        wrong_pw, tampered_meta,
+        "no oracle: wrong password vs tampered meta must be byte-identical"
     );
-    assert_eq!(vault_status(&session).unwrap(), SessionState::Locked);
+    assert_eq!(
+        wrong_pw, corrupt_db,
+        "no oracle: wrong password vs corrupt DB must be byte-identical"
+    );
+    assert_eq!(
+        tampered_meta, corrupt_db,
+        "no oracle: tampered meta vs corrupt DB must be byte-identical"
+    );
 }
 
 // ---- create_vault validation (SES-01, SES-02) ----
@@ -332,14 +372,75 @@ fn locked_session_gates_every_credential_command() {
 
 #[test]
 fn no_vault_session_gates_credential_commands_with_no_vault() {
+    // S4: ALL FIVE credential commands from NoVault must answer `no_vault`
+    // (never `locked` — the first-run gate would strand on the unlock view).
     let (_dir, session) = make_session();
     assert_eq!(list_credentials(&session).unwrap_err().code, "no_vault");
+    assert_eq!(get_credential(&session, 1).unwrap_err().code, "no_vault");
     assert_eq!(
         create_credential(&session, sample_input())
             .unwrap_err()
             .code,
         "no_vault"
     );
+    assert_eq!(
+        update_credential(&session, 1, sample_input())
+            .unwrap_err()
+            .code,
+        "no_vault"
+    );
+    assert_eq!(delete_credential(&session, 1).unwrap_err().code, "no_vault");
+}
+
+// ---- not_found contract (CRU-02/03/04) ----
+
+#[test]
+fn get_and_update_nonexistent_id_error_not_found() {
+    // S6: `get` and `update` on a missing id must surface the SAME
+    // code/key contract the delete path already asserts end-to-end.
+    let (_dir, session, _view) = unlocked_with_credential();
+
+    let err = get_credential(&session, 999).unwrap_err();
+    assert_eq!(err.code, "not_found");
+    assert_eq!(err.key, "errors.credential_not_found");
+
+    let err = update_credential(&session, 999, sample_input()).unwrap_err();
+    assert_eq!(err.code, "not_found");
+    assert_eq!(err.key, "errors.credential_not_found");
+}
+
+// ---- full restart persistence (frontend-facing flow) ----
+
+#[test]
+fn full_restart_persists_data_across_sessions() {
+    // S5: close the app (session dropped), start a FRESH session on the same
+    // vault dir. The state is detected as Locked from disk (not NoVault),
+    // unlock restores access, and data created in the prior session
+    // survives — the frontend-facing restart flow.
+    let dir = tempfile::tempdir().unwrap();
+    let pw = master_password();
+    {
+        let mut session = VaultSession::new(dir.path().to_path_buf());
+        create_vault(&mut session, pw.clone(), pw.clone(), &fast_params()).unwrap();
+        create_credential(&session, sample_input()).unwrap();
+        // session dropped here — simulates the app closing.
+    }
+
+    let mut fresh = VaultSession::new(dir.path().to_path_buf());
+    assert_eq!(
+        vault_status(&fresh).unwrap(),
+        SessionState::Locked,
+        "restart must detect the existing vault from disk"
+    );
+    unlock(&mut fresh, pw).unwrap();
+    let rows = list_credentials(&fresh).unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "data from the prior session must survive a full restart"
+    );
+    assert_eq!(rows[0].service_name, "github");
+    assert_eq!(rows[0].username, "octocat");
 }
 
 // ---- lock semantics ----
