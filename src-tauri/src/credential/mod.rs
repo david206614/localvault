@@ -12,9 +12,12 @@
 //! - All SQL is parameterized; input values never reach the query text
 //!   (injection-proof, adversarial-tested at the store layer).
 //! - Timestamps are UTC RFC3339 (chrono); `created_at` is set once,
-//!   `updated_at` is refreshed on every update (CRU-03).
-//! - `password` MAY be empty (CRU-06); only `service_name` and `username`
-//!   are validated. Errors never echo credential values (CRU-07).
+//!   `updated_at` is refreshed on every update (CRU-03). `create_at` /
+//!   `update_at` accept an injected timestamp so tests advance the clock
+//!   deterministically (no wall-clock sleeps).
+//! - `password` MAY be empty (CRU-06); `service_name` and `username` must be
+//!   non-empty, and every field has an upper length cap (S8). Errors never
+//!   echo credential values (CRU-07).
 
 mod model;
 mod validate;
@@ -24,7 +27,10 @@ use rusqlite::{params, Connection, Row};
 use crate::store::{Store, StoreError};
 
 pub use model::{CredentialInput, CredentialView};
-pub use validate::{validate_input, ValidationError};
+pub use validate::{
+    validate_input, ValidationError, MAX_CATEGORY_LEN, MAX_NOTES_LEN, MAX_PASSWORD_LEN,
+    MAX_SERVICE_NAME_LEN, MAX_URL_LEN, MAX_USERNAME_LEN,
+};
 
 /// Errors produced by the credential layer.
 ///
@@ -93,10 +99,12 @@ fn get_row(conn: &Connection, id: i64) -> Result<CredentialView, CredentialError
         })
 }
 
-/// Current UTC time as an RFC3339 string with millisecond precision (the
-/// format the design specifies for `created_at`/`updated_at`).
-fn now_utc_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+/// Formats a `DateTime<Utc>` as the RFC3339 millisecond string the design
+/// specifies for `created_at`/`updated_at`. The timestamp SOURCE is injected
+/// (S7): production calls pass `Utc::now`, tests pass explicit instants so
+/// `updated_at > created_at` is guaranteed deterministically — no sleeps.
+fn format_timestamp(now: chrono::DateTime<chrono::Utc>) -> String {
+    now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// Lists all credentials in a stable order (service name, then id).
@@ -126,8 +134,18 @@ pub fn get(store: &Store, id: i64) -> Result<CredentialView, CredentialError> {
 /// Creates a credential (CRU-01): validates, sets both timestamps, and
 /// commits transactionally (STO-07). Returns the persisted row.
 pub fn create(store: &Store, input: CredentialInput) -> Result<CredentialView, CredentialError> {
+    create_at(store, input, chrono::Utc::now())
+}
+
+/// Like `create`, but with an explicit timestamp (S7): tests advance the
+/// clock deterministically instead of sleeping.
+fn create_at(
+    store: &Store,
+    input: CredentialInput,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<CredentialView, CredentialError> {
     validate_input(&input)?;
-    let now = now_utc_rfc3339();
+    let now = format_timestamp(now);
     store.with_transaction(|conn| {
         conn.execute(
             "INSERT INTO credentials
@@ -154,13 +172,28 @@ pub fn create(store: &Store, input: CredentialInput) -> Result<CredentialView, C
 /// Updates the editable fields of a credential (CRU-03): refreshes
 /// `updated_at`, preserves `created_at`. Errors with `NotFound` when the id
 /// does not exist. Commits transactionally.
+///
+/// Contract (W2): the update REPLACES all six editable fields — the
+/// frontend must always send the complete object. There is no merge:
+/// empty `url`/`notes` in the input WIPE the stored values.
 pub fn update(
     store: &Store,
     id: i64,
     input: CredentialInput,
 ) -> Result<CredentialView, CredentialError> {
+    update_at(store, id, input, chrono::Utc::now())
+}
+
+/// Like `update`, but with an explicit timestamp (S7): tests advance the
+/// clock deterministically instead of sleeping.
+fn update_at(
+    store: &Store,
+    id: i64,
+    input: CredentialInput,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<CredentialView, CredentialError> {
     validate_input(&input)?;
-    let now = now_utc_rfc3339();
+    let now = format_timestamp(now);
     store.with_transaction(|conn| {
         let updated = conn
             .execute(
@@ -207,8 +240,6 @@ mod tests {
     use super::*;
     use crate::crypto::{VaultKey, KEY_LEN};
     use crate::store::Store;
-    use std::thread;
-    use std::time::Duration;
 
     fn test_key() -> VaultKey {
         VaultKey::from_bytes([7u8; KEY_LEN])
@@ -352,14 +383,24 @@ mod tests {
     #[test]
     fn update_changes_fields_and_advances_updated_at_preserving_created_at() {
         let (_dir, store) = test_store();
-        let created = create(&store, input()).unwrap();
-        // Guarantee the clock ticked past `created_at`'s millisecond.
-        thread::sleep(Duration::from_millis(5));
+        // Deterministic clock (S7): no wall-clock sleep. Create at t0, update
+        // at t0 + 1 ms — `updated_at > created_at` is guaranteed by the
+        // injected timestamps, not by a sleep racing the clock.
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-08-16T00:00:00.000Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let created = create_at(&store, input(), t0).unwrap();
         let mut edited = input();
         edited.password = "new-password!".into();
         edited.notes = "edited notes".into();
 
-        let updated = update(&store, created.id, edited).unwrap();
+        let updated = update_at(
+            &store,
+            created.id,
+            edited,
+            t0 + chrono::Duration::milliseconds(1),
+        )
+        .unwrap();
         assert_eq!(updated.id, created.id);
         assert_eq!(updated.password, "new-password!");
         assert_eq!(updated.notes, "edited notes");
@@ -452,13 +493,16 @@ mod tests {
     #[test]
     fn hostile_inputs_roundtrip_byte_identical() {
         let (_dir, store) = test_store();
-        let long = "x".repeat(10_000);
+        // S8: field caps are enforced by `validate_input`, so the long value
+        // rides in `notes` (cap 16 384) to stay UNDER the cap and round-trip
+        // byte-identically. (The store-layer adversarial test still covers a
+        // 10 000-char value at the raw-SQL level, where no validation runs.)
+        let long = "x".repeat(4_000);
         let hostile = [
             "O'Reilly",
             "'); DROP TABLE credentials;--",
             "héllo wörld 世界 🚀",
             "line1\nline2\tend",
-            long.as_str(),
         ];
         for (i, value) in hostile.iter().enumerate() {
             let mut c = input();
@@ -466,15 +510,54 @@ mod tests {
             c.username = value.to_string();
             create(&store, c).unwrap();
         }
+        let mut long_input = input();
+        long_input.service_name = "svc-long".into();
+        long_input.notes = long.clone();
+        create(&store, long_input).unwrap();
+
         let rows = list(&store).unwrap();
-        for (i, row) in rows.iter().enumerate() {
+        for (i, row) in rows.iter().take(hostile.len()).enumerate() {
             assert_eq!(row.username.as_bytes(), hostile[i].as_bytes());
         }
+        let long_row = rows
+            .iter()
+            .find(|r| r.service_name == "svc-long")
+            .expect("long-value row must exist");
+        assert_eq!(long_row.notes.as_bytes(), long.as_bytes());
         // The injection attempt must not have altered the schema.
         let count: i64 = store
             .connection()
             .query_row("SELECT count(*) FROM credentials", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, hostile.len() as i64);
+        assert_eq!(count, (hostile.len() + 1) as i64);
+    }
+
+    #[test]
+    fn over_cap_values_are_rejected_and_write_nothing() {
+        // S8: a value above the cap is rejected with FieldTooLong and the
+        // transaction writes nothing.
+        let (_dir, store) = test_store();
+        let mut too_long_notes = input();
+        too_long_notes.notes = "n".repeat(MAX_NOTES_LEN + 1);
+        let err = create(&store, too_long_notes).unwrap_err();
+        assert!(matches!(
+            err,
+            CredentialError::InvalidInput(ValidationError::FieldTooLong { max: MAX_NOTES_LEN })
+        ));
+        assert!(
+            list(&store).unwrap().is_empty(),
+            "no row on over-cap validation failure"
+        );
+
+        // The cap applies to updates too, and the stored row survives.
+        let created = create(&store, input()).unwrap();
+        let mut too_long_url = input();
+        too_long_url.url = "x".repeat(MAX_URL_LEN + 1);
+        let err = update(&store, created.id, too_long_url).unwrap_err();
+        assert!(matches!(
+            err,
+            CredentialError::InvalidInput(ValidationError::FieldTooLong { max: MAX_URL_LEN })
+        ));
+        assert_eq!(get(&store, created.id).unwrap(), created, "row untouched");
     }
 }

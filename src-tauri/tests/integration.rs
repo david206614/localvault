@@ -220,6 +220,72 @@ fn empty_required_fields_are_rejected_with_validation() {
 }
 
 #[test]
+fn over_cap_fields_are_rejected_with_field_too_long() {
+    // S8: the command layer surfaces over-cap values as the granular
+    // `validation` / `errors.field_too_long` contract — and nothing is
+    // written. The caps themselves are pinned at the unit level
+    // (validate.rs); here we pin the code/key mapping end-to-end.
+    let (_dir, session, created) = unlocked_with_credential();
+
+    let mut over_notes = sample_input();
+    over_notes.notes = "n".repeat(localvault_lib::credential::MAX_NOTES_LEN + 1);
+    let err = create_credential(&session, over_notes).unwrap_err();
+    assert_eq!(err.code, "validation");
+    assert_eq!(err.key, "errors.field_too_long");
+    assert!(
+        !err.message.contains("nnnn"),
+        "message must not echo the value (CRU-07)"
+    );
+    assert_eq!(
+        list_credentials(&session).unwrap().len(),
+        1,
+        "no row written for the over-cap create"
+    );
+
+    // The same contract applies to update_credential, and the row survives.
+    let mut over_url = sample_input();
+    over_url.url = "x".repeat(localvault_lib::credential::MAX_URL_LEN + 1);
+    let err = update_credential(&session, created.id, over_url).unwrap_err();
+    assert_eq!(err.code, "validation");
+    assert_eq!(err.key, "errors.field_too_long");
+    assert_eq!(
+        get_credential(&session, created.id).unwrap(),
+        created,
+        "over-cap update must leave the stored row untouched"
+    );
+}
+
+#[test]
+fn update_replaces_all_editable_fields_never_merges() {
+    // W2 contract: `update` REPLACES all six editable fields. The frontend
+    // must ALWAYS send the complete object — sending empty url/notes WIPES
+    // them; there is no merge.
+    let (_dir, mut session) = make_session();
+    let pw = master_password();
+    create_vault(&mut session, pw.clone(), pw, &fast_params()).unwrap();
+    let created = create_credential(&session, sample_input()).unwrap();
+    assert_eq!(created.url, "https://github.com");
+    assert_eq!(created.notes, "work account");
+
+    let mut cleared = sample_input();
+    cleared.url.clear();
+    cleared.notes.clear();
+    cleared.password = "rotated!".into();
+    let updated = update_credential(&session, created.id, cleared).unwrap();
+    assert_eq!(
+        updated.url, "",
+        "empty url in the full object wipes the stored url"
+    );
+    assert_eq!(
+        updated.notes, "",
+        "empty notes in the full object wipe the stored notes"
+    );
+    assert_eq!(updated.password, "rotated!");
+    assert_eq!(updated.service_name, "github");
+    assert_eq!(updated.username, "octocat");
+}
+
+#[test]
 fn error_messages_never_leak_credential_values() {
     // CRU-07: a distinctive secret must never appear in any error message.
     let (_dir, mut session) = make_session();

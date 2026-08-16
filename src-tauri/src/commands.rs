@@ -114,6 +114,11 @@ fn map_credential_error(e: CredentialError) -> AppError {
             "errors.empty_username",
             "username must not be empty",
         ),
+        CredentialError::InvalidInput(ValidationError::FieldTooLong { max }) => AppError::with_key(
+            "validation",
+            "errors.field_too_long",
+            format!("field must be at most {max} characters"),
+        ),
         CredentialError::NotFound => AppError::with_key(
             "not_found",
             "errors.credential_not_found",
