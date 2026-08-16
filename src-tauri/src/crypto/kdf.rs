@@ -78,6 +78,31 @@ mod tests {
     }
 
     #[test]
+    fn changing_m_cost_changes_the_key() {
+        let salt = [7u8; SALT_LEN];
+        let k1 = derive_key(b"pw", &salt, &KdfParams::new(8, 1, 1)).unwrap();
+        let k2 = derive_key(b"pw", &salt, &KdfParams::new(9, 1, 1)).unwrap();
+        assert_ne!(k1.as_bytes(), k2.as_bytes());
+    }
+
+    #[test]
+    fn changing_t_cost_changes_the_key() {
+        let salt = [7u8; SALT_LEN];
+        let k1 = derive_key(b"pw", &salt, &KdfParams::new(8, 1, 1)).unwrap();
+        let k2 = derive_key(b"pw", &salt, &KdfParams::new(8, 2, 1)).unwrap();
+        assert_ne!(k1.as_bytes(), k2.as_bytes());
+    }
+
+    #[test]
+    fn changing_p_cost_changes_the_key() {
+        let salt = [7u8; SALT_LEN];
+        // m=16 keeps argon2's m >= 8*p constraint satisfied for p=2.
+        let k1 = derive_key(b"pw", &salt, &KdfParams::new(16, 1, 1)).unwrap();
+        let k2 = derive_key(b"pw", &salt, &KdfParams::new(16, 1, 2)).unwrap();
+        assert_ne!(k1.as_bytes(), k2.as_bytes());
+    }
+
+    #[test]
     fn invalid_params_are_rejected() {
         let err = derive_key(b"pw", &[0u8; SALT_LEN], &KdfParams::new(4, 1, 1)).unwrap_err();
         assert!(matches!(err, CryptoError::InvalidParams(_)));

@@ -78,4 +78,25 @@ mod tests {
         let tampered = derive_key(b"master password", &[2u8; SALT_LEN], &params).unwrap();
         assert!(!verify_verifier(&tampered, &verifier));
     }
+
+    #[test]
+    fn tampered_kdf_params_fail_the_verifier() {
+        // Equivalent to an attacker editing the params field in vault.meta:
+        // unlock derives with the tampered params, producing a different key
+        // that no longer matches the stored verifier (CRY-04). Each
+        // dimension is tampered independently.
+        let salt = generate_salt();
+        let original = fast_params();
+        let key = derive_key(b"master password", &salt, &original).unwrap();
+        let verifier = compute_verifier(&key);
+
+        let tampered_m = derive_key(b"master password", &salt, &KdfParams::new(9, 1, 1)).unwrap();
+        assert!(!verify_verifier(&tampered_m, &verifier));
+
+        let tampered_t = derive_key(b"master password", &salt, &KdfParams::new(8, 2, 1)).unwrap();
+        assert!(!verify_verifier(&tampered_t, &verifier));
+
+        let tampered_p = derive_key(b"master password", &salt, &KdfParams::new(16, 1, 2)).unwrap();
+        assert!(!verify_verifier(&tampered_p, &verifier));
+    }
 }

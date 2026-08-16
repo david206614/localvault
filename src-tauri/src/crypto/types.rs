@@ -205,13 +205,22 @@ mod tests {
 
     #[test]
     fn key_bytes_are_zeroized_on_drop() {
-        // Mirrors the `zeroize` crate's own test: read the buffer through a
-        // pointer after `drop` — `Zeroizing` wipes it (CRY-02).
-        let ptr = {
-            let key = VaultKey::from_bytes([0xAA; KEY_LEN]);
-            key.as_bytes().as_ptr()
-        };
-        let leaked = unsafe { core::slice::from_raw_parts(ptr, KEY_LEN) };
-        assert!(leaked.iter().all(|&b| b == 0));
+        // Proves CRY-02 (the Zeroizing buffer is wiped on drop) without ever
+        // reading FREED memory. The zeroize crate's own documented test
+        // (Zeroizing over a Vec, read after `drop`) is unreliable here: the
+        // test harness's allocator reuses the freed chunk before the read
+        // (probed on this host: both box and vec variants failed with the
+        // identical reused bytes). So instead the allocation is deliberately
+        // kept live via `Box::into_raw`, the drop glue is run in place, and
+        // the wiped buffer is read back before any dealloc. The 32-byte
+        // allocation is intentionally leaked at the end (reclaiming after
+        // `drop_in_place` would double-drop).
+        use std::ptr;
+        let raw = Box::into_raw(Box::new(VaultKey::from_bytes([0xAA; KEY_LEN])));
+        unsafe {
+            ptr::drop_in_place(raw); // runs VaultKey's drop glue (wipes the key)
+            let leaked = core::slice::from_raw_parts((*raw).as_bytes().as_ptr(), KEY_LEN);
+            assert!(leaked.iter().all(|&b| b == 0));
+        }
     }
 }
