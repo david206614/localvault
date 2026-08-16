@@ -21,6 +21,16 @@ pub const OWASP_ARGON2_T: u32 = 3;
 /// OWASP-recommended Argon2id parallelism.
 pub const OWASP_ARGON2_P: u32 = 4;
 
+/// Upper bound for Argon2id memory cost: 1 GiB (in KiB). Prevents corrupt or
+/// malicious `vault.meta` params from forcing multi-GiB allocations at unlock.
+pub const MAX_M_KIB: u32 = 1_048_576;
+
+/// Upper bound for Argon2id iteration count.
+pub const MAX_T: u32 = 10;
+
+/// Upper bound for Argon2id parallelism.
+pub const MAX_P: u32 = 16;
+
 /// Fast Argon2id memory cost for tests only: the minimum Argon2 accepts.
 pub const FAST_TEST_M_KIB: u32 = 8;
 
@@ -74,6 +84,24 @@ impl KdfParams {
             return Err(CryptoError::InvalidParams(format!(
                 "p_cost must be at least 1, got {}",
                 self.p_cost
+            )));
+        }
+        if self.m_cost > MAX_M_KIB {
+            return Err(CryptoError::InvalidParams(format!(
+                "m_cost must be at most {} KiB (1 GiB), got {}",
+                MAX_M_KIB, self.m_cost
+            )));
+        }
+        if self.t_cost > MAX_T {
+            return Err(CryptoError::InvalidParams(format!(
+                "t_cost must be at most {}, got {}",
+                MAX_T, self.t_cost
+            )));
+        }
+        if self.p_cost > MAX_P {
+            return Err(CryptoError::InvalidParams(format!(
+                "p_cost must be at most {}, got {}",
+                MAX_P, self.p_cost
             )));
         }
         Ok(())
@@ -152,6 +180,19 @@ mod tests {
         assert!(KdfParams::new(8, 0, 1).validate().is_err());
         assert!(KdfParams::new(8, 1, 0).validate().is_err());
         assert!(KdfParams::new(8, 1, 1).validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_above_maximum_params() {
+        // m_cost capped at 1 GiB (in KiB): 2^20.
+        assert!(KdfParams::new(1_048_577, 1, 1).validate().is_err());
+        assert!(KdfParams::new(1_048_576, 1, 1).validate().is_ok());
+        // t_cost capped at 10.
+        assert!(KdfParams::new(8, 11, 1).validate().is_err());
+        assert!(KdfParams::new(8, 10, 1).validate().is_ok());
+        // p_cost capped at 16 (m=128 keeps m >= 8*p for the boundary case).
+        assert!(KdfParams::new(8, 1, 17).validate().is_err());
+        assert!(KdfParams::new(128, 1, 16).validate().is_ok());
     }
 
     #[test]

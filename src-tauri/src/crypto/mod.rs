@@ -13,8 +13,8 @@ mod verifier;
 
 pub use kdf::{derive_key, generate_salt};
 pub use types::{
-    KdfParams, VaultKey, FAST_TEST_M_KIB, FAST_TEST_P, FAST_TEST_T, KEY_LEN, OWASP_ARGON2_M_KIB,
-    OWASP_ARGON2_P, OWASP_ARGON2_T, SALT_LEN,
+    KdfParams, VaultKey, FAST_TEST_M_KIB, FAST_TEST_P, FAST_TEST_T, KEY_LEN, MAX_M_KIB, MAX_P,
+    MAX_T, OWASP_ARGON2_M_KIB, OWASP_ARGON2_P, OWASP_ARGON2_T, SALT_LEN,
 };
 pub use verifier::{
     compute_verifier, verify_slice, verify_verifier, VERIFIER_CONTEXT, VERIFIER_LEN,
