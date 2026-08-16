@@ -43,6 +43,13 @@ fn open_encrypted(path: &Path, key: &VaultKey) -> Result<Connection, StoreError>
         .map_err(StoreError::Sqlite)?;
     conn.pragma_update(None, "secure_delete", "ON")
         .map_err(StoreError::Sqlite)?;
+    // Review fix R1: with cipher_memory_security ON, SQLCipher zeroizes its
+    // internal key-derivation state and cached key copies when the
+    // connection closes, complementing VaultSession::lock (which drops the
+    // connection). If the pragma is a no-op in this build, the test
+    // cipher_memory_security_is_active catches it.
+    conn.pragma_update(None, "cipher_memory_security", "ON")
+        .map_err(StoreError::Sqlite)?;
     // Probe: forces decryption of page 1; wrong key / non-SQLCipher file
     // fails here with "file is not a database".
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
@@ -548,6 +555,20 @@ mod tests {
             .query_row("PRAGMA cipher_hmac_algorithm", [], |r| r.get(0))
             .unwrap();
         assert_eq!(hmac, "HMAC_SHA512");
+    }
+
+    #[test]
+    fn cipher_memory_security_is_active() {
+        // Review fix R1: SQLCipher must wipe its key copies on connection
+        // close. Mirrors the secure_delete pattern: set at open, read back.
+        let dir = temp_dir();
+        let store = Store::create(dir.path(), &test_key()).unwrap();
+        // SQLCipher returns the value as text ("1" when ON, "0" when OFF).
+        let mem_sec: String = store
+            .connection()
+            .query_row("PRAGMA cipher_memory_security", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mem_sec, "1", "cipher_memory_security must be ON");
     }
 
     #[test]
