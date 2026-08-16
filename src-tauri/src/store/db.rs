@@ -15,8 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, Transaction, TransactionBehavior};
+use zeroize::Zeroizing;
 
-use crate::crypto::VaultKey;
+use crate::crypto::{VaultKey, KEY_LEN};
 
 use super::{db_path, schema, StoreError};
 
@@ -35,8 +36,24 @@ fn open_encrypted(path: &Path, key: &VaultKey) -> Result<Connection, StoreError>
     let conn = Connection::open(path).map_err(StoreError::Sqlite)?;
     // Raw-key mode: SQLCipher consumes the derived 32-byte key directly,
     // bypassing its PBKDF2 (the Argon2id derivation already happened above).
-    let raw_key = format!("x'{}'", hex::encode(key.as_bytes()));
-    conn.pragma_update(None, "key", raw_key)
+    // Review fix R1: build "x'<hex>'" inside Zeroizing buffers so the hex
+    // transcription of the key bytes never lingers in plain heap memory —
+    // both the hex encoding and the final pragma string zeroize on drop.
+    // Residual copies are transient: rusqlite's param binding (copied into
+    // SQLite's own memory) and SQLCipher's internal key store, which
+    // cipher_memory_security wipes at connection close.
+    let mut raw_key = Zeroizing::new(String::with_capacity(2 + KEY_LEN * 2 + 2));
+    {
+        let mut hex_buf = Zeroizing::new([0u8; KEY_LEN * 2]);
+        hex::encode_to_slice(key.as_bytes(), hex_buf.as_mut())
+            .map_err(|_| StoreError::Corrupt("key hex encoding failed".into()))?;
+        let hex_str = std::str::from_utf8(hex_buf.as_ref())
+            .map_err(|_| StoreError::Corrupt("key hex encoding failed".into()))?;
+        raw_key.push_str("x'");
+        raw_key.push_str(hex_str);
+        raw_key.push('\'');
+    }
+    conn.pragma_update(None, "key", raw_key.as_str())
         .map_err(StoreError::Sqlite)?;
     // Cipher config (design): SHA-512 per-page HMAC + secure delete.
     conn.pragma_update(None, "cipher_hmac_algorithm", "HMAC_SHA512")
@@ -225,7 +242,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{VaultKey, KEY_LEN};
+    use crate::crypto::VaultKey; // KEY_LEN comes in via `super::*`
 
     /// Arbitrary deterministic key for store tests: the store does not derive
     /// keys (that is the vault layer's job), so tests use fixed bytes instead
