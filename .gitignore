@@ -4,6 +4,7 @@
 # Node
 /node_modules
 /dist
+*.tsbuildinfo
 
 # Tauri build artifacts
 /src-tauri/target

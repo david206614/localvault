@@ -1,0 +1,41 @@
+# Maintainer: David <david206614@users.noreply.github.com>
+pkgname=localvault-git
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Local-first, offline password manager'
+arch=('x86_64' 'aarch64')
+url='https://github.com/david206614/localvault'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'openssl')
+makedepends=('cargo' 'nodejs' 'npm')
+source=("git+https://github.com/david206614/localvault.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd localvault
+  printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd localvault
+  npm ci
+  npm run build
+  cd src-tauri
+  cargo build --release --features app
+}
+
+package() {
+  cd localvault
+
+  # Binary
+  install -Dm755 src-tauri/target/release/localvault \
+    "$pkgdir/usr/bin/localvault"
+
+  # Desktop file
+  install -Dm644 packaging/localvault.desktop \
+    "$pkgdir/usr/share/applications/localvault.desktop"
+
+  # Icon placeholder — replace with a real icon when available
+  install -Dm644 /dev/null \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/localvault.png"
+}
