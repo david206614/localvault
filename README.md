@@ -77,6 +77,7 @@ Make sure `~/.local/bin` is in your `PATH`:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 # Add to ~/.bashrc or ~/.zshrc for persistence
+# For fish: fish_add_path ~/.local/bin
 ```
 
 </details>
@@ -103,6 +104,27 @@ makepkg -si
 
 - `Enter` — submit forms (create vault, unlock, save credential)
 - `Escape` — close dialogs, cancel edits
+
+## Uninstallation
+
+LocalVault installs these files:
+
+| Path | What |
+|------|------|
+| `~/.local/bin/localvault` | Binary |
+| `~/.local/share/applications/localvault.desktop` | Desktop entry |
+| `~/.local/share/icons/hicolor/48x48/apps/localvault.png` | Icon |
+| `~/.local/share/localvault/` | Vault data (`vault.db` + `meta.json`) |
+
+```bash
+# Remove app files
+rm ~/.local/bin/localvault
+rm ~/.local/share/applications/localvault.desktop
+rm ~/.local/share/icons/hicolor/48x48/apps/localvault.png
+
+# Remove vault data (IRREVERSIBLE — no backup mechanism yet)
+rm -rf ~/.local/share/localvault
+```
 
 ## Architecture
 
