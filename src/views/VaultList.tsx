@@ -23,16 +23,19 @@ export function VaultList() {
 
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CredentialView | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [showForm, setShowForm] = useState<"create" | CredentialView | null>(null);
 
   async function handleDeleteConfirm() {
     if (!deleteTarget) return;
+    setDeleting(true);
     try {
       await deleteCredential(deleteTarget.id);
       addToast(t("toast.credential_deleted"), "success");
     } catch {
       // error is already in session store
     } finally {
+      setDeleting(false);
       setDeleteTarget(null);
     }
   }
@@ -172,6 +175,7 @@ export function VaultList() {
         open={!!deleteTarget}
         onConfirm={() => void handleDeleteConfirm()}
         onCancel={() => setDeleteTarget(null)}
+        loading={deleting}
       />
     </div>
   );

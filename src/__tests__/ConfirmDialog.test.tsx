@@ -55,4 +55,15 @@ describe("ConfirmDialog", () => {
     await userEvent.click(screen.getByText("confirm.no"));
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it("confirm button is disabled and shows '...' when loading", () => {
+    render(<ConfirmDialog open={true} onConfirm={() => {}} onCancel={() => {}} loading={true} />);
+    const confirmBtn = screen.getByText("...");
+    expect(confirmBtn).toBeDisabled();
+  });
+
+  it("confirm button enabled when loading is false (default)", () => {
+    render(<ConfirmDialog open={true} onConfirm={() => {}} onCancel={() => {}} />);
+    expect(screen.getByText("confirm.yes")).not.toBeDisabled();
+  });
 });
