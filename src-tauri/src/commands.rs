@@ -299,7 +299,8 @@ pub mod tauri {
         id: i64,
     ) -> Result<CredentialView, AppError> {
         let handle = state.inner().clone();
-        blocking(move || with_session(&handle, |session| super::get_credential(session, id))).await?
+        blocking(move || with_session(&handle, |session| super::get_credential(session, id)))
+            .await?
     }
 
     #[tauri::command]
