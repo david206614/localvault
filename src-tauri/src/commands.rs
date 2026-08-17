@@ -228,10 +228,6 @@ pub mod tauri {
     use crate::error::AppError;
     use crate::vault::VaultSession;
 
-    use super::{
-        create_credential, create_vault, delete_credential, get_credential, list_credentials, lock,
-        unlock, update_credential, vault_status,
-    };
     use crate::credential::{CredentialInput, CredentialView};
     use crate::vault::SessionState;
 
@@ -268,25 +264,25 @@ pub mod tauri {
                 super::create_vault(session, password, confirm, &KdfParams::default())
             })
         })
-        .await
+        .await?
     }
 
     #[tauri::command]
     pub async fn unlock(state: State<'_, SessionHandle>, password: String) -> Result<(), AppError> {
         let handle = state.inner().clone();
-        blocking(move || with_session(&handle, |session| super::unlock(session, password))).await
+        blocking(move || with_session(&handle, |session| super::unlock(session, password))).await?
     }
 
     #[tauri::command]
     pub async fn lock(state: State<'_, SessionHandle>) -> Result<(), AppError> {
         let handle = state.inner().clone();
-        blocking(move || with_session(&handle, |session| super::lock(session))).await
+        blocking(move || with_session(&handle, |session| super::lock(session))).await?
     }
 
     #[tauri::command]
     pub async fn vault_status(state: State<'_, SessionHandle>) -> Result<SessionState, AppError> {
         let handle = state.inner().clone();
-        blocking(move || with_session(&handle, |session| super::vault_status(session))).await
+        blocking(move || with_session(&handle, |session| super::vault_status(session))).await?
     }
 
     #[tauri::command]
@@ -294,7 +290,7 @@ pub mod tauri {
         state: State<'_, SessionHandle>,
     ) -> Result<Vec<CredentialView>, AppError> {
         let handle = state.inner().clone();
-        blocking(move || with_session(&handle, |session| super::list_credentials(session))).await
+        blocking(move || with_session(&handle, |session| super::list_credentials(session))).await?
     }
 
     #[tauri::command]
@@ -303,7 +299,7 @@ pub mod tauri {
         id: i64,
     ) -> Result<CredentialView, AppError> {
         let handle = state.inner().clone();
-        blocking(move || with_session(&handle, |session| super::get_credential(session, id))).await
+        blocking(move || with_session(&handle, |session| super::get_credential(session, id))).await?
     }
 
     #[tauri::command]
@@ -313,7 +309,7 @@ pub mod tauri {
     ) -> Result<CredentialView, AppError> {
         let handle = state.inner().clone();
         blocking(move || with_session(&handle, |session| super::create_credential(session, input)))
-            .await
+            .await?
     }
 
     #[tauri::command]
@@ -328,7 +324,7 @@ pub mod tauri {
                 super::update_credential(session, id, input)
             })
         })
-        .await
+        .await?
     }
 
     #[tauri::command]
@@ -338,7 +334,7 @@ pub mod tauri {
     ) -> Result<(), AppError> {
         let handle = state.inner().clone();
         blocking(move || with_session(&handle, |session| super::delete_credential(session, id)))
-            .await
+            .await?
     }
 }
 
