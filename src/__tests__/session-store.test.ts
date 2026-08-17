@@ -25,7 +25,7 @@ import type { CredentialView, CredentialInput } from "../lib/types";
 const mockApi = vi.mocked(api);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   useSessionStore.setState({
     status: "Locked",
     credentials: [],
