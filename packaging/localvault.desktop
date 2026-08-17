@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LocalVault
+Comment=Local-first, offline password manager
+Exec=localvault
+Icon=localvault
+Terminal=false
+Categories=Utility;Security;
+Keywords=password;vault;manager;
